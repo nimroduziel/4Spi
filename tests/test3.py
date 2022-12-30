@@ -22,7 +22,7 @@ while True:
 
         for i in chunck_lst:
             sock.send(i)
-        print("sent")
+            print(f"sent {len(i)}")
     except:
         break
 
