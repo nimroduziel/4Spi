@@ -1,20 +1,28 @@
 import math
 import time
 import threading
+
+import pyaudio
 import pygame
 from pygame.locals import *
 import socket
 import pickle
-import subprocess
+import cv2
+from datetime import datetime
 
+movement_input_dict = {"speed": 0, "angle": 0, "rb": False, "lb": False, "exit": False}
+movement_input_dict_copy = movement_input_dict.copy()
 
-movement_input_dict = {"speed": 0, "angle": 0, "rb": False, "lb": False}
-
-port_to_send = 5001
 ip_to_send = "10.100.102.30"
 
+PORT = 5000
+BUTTONS_PORT = 5001
+SOUND_PORT = 5002
+STREAM_PORT = 8000
+
+
 sock = socket.socket()
-sock.connect((ip_to_send, port_to_send))
+sock.connect((ip_to_send, BUTTONS_PORT))
 run = True
 
 pygame.init()
@@ -47,50 +55,97 @@ def calc_angle(x, y):
 
 def stream():
     sock = socket.socket()
-    sock.bind(("0.0.0.0", 8000))
-    sock.listen(20)
-    cli_sock, addr = sock.accept()
-
-    pygame.init()
-
-    window_size = (640, 480)
+    sock.connect((ip_to_send, STREAM_PORT))
 
     data = b''
-    screen = pygame.display.set_mode(window_size)
-    running = True
     new = True
     image_size = 0
+    at_start = True
+    i = 0
 
-    while running:
-        for event in pygame.event.get():
-            if event.type == pygame.QUIT:
-                running = False
+    while not movement_input_dict["exit"]:
 
-        data += cli_sock.recv(4096)
+        if data != b'' and at_start:
+            cv2.namedWindow("image", cv2.WINDOW_NORMAL)
+            widht = 1920
+            height = 1080
+            cv2.resizeWindow("image", widht, height)
+            cv2.moveWindow("image", 0, 0)
+            at_start = False
+
+        data += sock.recv(4096)
         if new and data != b'':
             image_size = int.from_bytes(data[:3], 'big')
             data = data[3:]
             new = False
-            print(f"image_size: {image_size}")
+            # print(f"image_size: {image_size}")
 
         if len(data) >= image_size != 0:
-            print(len(data))
-            print("image")
-            with open("image.jpg", "wb") as f:
-                f.write(data[:image_size])
+            # print(len(data[:image_size]))
+
+            image = pickle.loads(data[:image_size])
+            # for pygame
+            cv2.imshow("image", image)
+
+            key_input = cv2.waitKey(1)
+            if key_input != -1:
+                print(key_input)
+
+            if key_input == ord('q'):  # if self.x
+                i += 1
+                now = datetime.now()
+                dt_string = now.strftime("%d-%m-%Y %H-%M-%S")
+                print(dt_string)
+                cv2.imwrite(f"{dt_string}.jpg", image)
+                print(f"{dt_string}.jpg")
+                print("saved image")
+
+            if key_input == 27:  # if self.exit
+                break
+
             data = data[image_size:]
             new = True
 
-            image = pygame.image.load("image.jpg")
-            screen.blit(image, (0, 0))
-            pygame.display.flip()
+    cv2.destroyAllWindows()
+
+
+def sound_stream():
+    sock = socket.socket()
+    sock.connect((ip_to_send, SOUND_PORT))
+
+    print("sound started")
+
+    chunk = 1024
+    format = pyaudio.paInt16
+    channels = 2
+    rate = 44100
+
+    p = pyaudio.PyAudio()
+    p.get_default_output_device_info()
+
+    audio_stream = p.open(format=format, channels=channels, rate=rate, output=True, frames_per_buffer=chunk)
+
+    print("waiting")
+
+    while not movement_input_dict["exit"]:
+        try:
+            data = sock.recv(chunk)
+            # Output the audio data to the speakers
+            audio_stream.write(data)
+
+        except Exception as e:
+            pass
+            #print(f"audio problem: {e}")
 
 
 stream_thread = threading.Thread(target=stream, args=())
+sound_stream_thread = threading.Thread(target=sound_stream, args=())
+
 stream_thread.start()
+sound_stream_thread.start()
 
 
-while run:
+while not movement_input_dict["exit"]:
     for event in pygame.event.get():
         if event.type == JOYAXISMOTION:
             if event.axis == 5:
@@ -138,7 +193,7 @@ while run:
             elif event.button == 5:
                 movement_input_dict["rb"] = True
             elif event.button == 7:
-                buttons.exit = True
+                movement_input_dict["exit"] = True
                 run = False
                 pygame.quit()
 
@@ -163,6 +218,9 @@ while run:
         elif event.type == JOYDEVICEREMOVED:
             joysticks = [pygame.joystick.Joystick(i) for i in range(pygame.joystick.get_count())]
 
-    #print(movement_input_dict)
-    sock.send(pickle.dumps(movement_input_dict))
-    time.sleep(0.1)
+    #print(movement_input_dict.values() != movement_input_dict_copy.values())
+    if movement_input_dict != movement_input_dict_copy:
+        print(f"sent:{movement_input_dict}")
+        sock.send(pickle.dumps(movement_input_dict))
+        time.sleep(0.1)
+        movement_input_dict_copy = movement_input_dict.copy()

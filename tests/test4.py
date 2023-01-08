@@ -1,5 +1,4 @@
 import socket
-import pygame
 import cv2
 import pickle
 from datetime import datetime
@@ -21,7 +20,7 @@ data = b''
 running = True
 new = True
 image_size = 0
-at_start = True
+at_start = True++
 i = 0
 
 while running:
