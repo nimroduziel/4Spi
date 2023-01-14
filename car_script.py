@@ -8,6 +8,10 @@ import pickle
 import cv2
 import pyaudio
 
+import imutils
+import numpy as np
+import base64
+
 
 PORT = 5000
 BUTTONS_PORT = 5001
@@ -69,6 +73,9 @@ class CarMovement:
         elif self.buttons['lb'] and not self.buttons['rb'] and self.buttons['speed'] < 0:
             self.right_speed = - self.right_speed
 
+        if self.buttons['speed'] < 0 and not self.buttons['lb']:
+            self.right_speed, self.left_speed = self.left_speed, self.right_speed
+
     def change_left(self):
         if self.left_speed > 0:
             GPIO.output(MOTOR1A, GPIO.HIGH)
@@ -106,7 +113,7 @@ class CarMovement:
         self.change_left()
         self.change_right()
 
-        #print(f"left: {self.left_speed}, right: {self.right_speed}")
+        print(f"left: {self.left_speed}, right: {self.right_speed}")
         p.ChangeDutyCycle(abs(self.left_speed))
         p2.ChangeDutyCycle(abs(self.right_speed))
 
@@ -119,21 +126,30 @@ class CarMovement:
 class Car:
     def __init__(self):
         self.button_dict = {"speed": 0, "angle": 0, "rb": False, "lb": False, "exit": False}
-        self.vid = cv2.VideoCapture(0)
+        self.vid = cv2.VideoCapture(-1)
 
     def movement(self):
 
-        car_movement = CarMovement(self.button_dict)
-        while not self.button_dict["exit"]:
-            try:
-                car_movement.move_car()
-                car_movement.buttons = self.button_dict
-                #car_movement.to_string()
+        sock = socket.socket()
+        sock.bind(("0.0.0.0", BUTTONS_PORT))
+        sock.listen(20)
+        client_sock, addr = sock.accept()
+        print("accepted movement")
 
-            except Exception as e:
-                print(e)
+        car_movement = CarMovement(self.button_dict)
+
+        while not self.button_dict["exit"]:
+
+            data = pickle.loads(client_sock.recv(1024))
+            self.button_dict = data
+            car_movement.buttons = data
+            car_movement.to_string()
+            car_movement.move_car()
+
+        client_sock.close()
 
     def stream(self):
+        """"
         sock = socket.socket()
         sock.bind(("0.0.0.0", 8000))
         sock.listen(20)
@@ -142,6 +158,9 @@ class Car:
         while not self.button_dict["exit"]:
             try:
                 ret, frame = self.vid.read()
+                print(f"old size: {frame.shape}")
+                frame = cv2.GaussianBlur(frame, (15, 15), 0)
+                print(f"new size: {frame.shape}")
                 data = pickle.dumps(frame)
 
                 chunk_size = 4096
@@ -150,13 +169,38 @@ class Car:
                     chunck_lst.append(data[i:i + chunk_size])
 
                 cli_sock.send(len(data).to_bytes(3, 'big'))
-                #print(f"sent: {len(data)}")
 
                 for i in chunck_lst:
                     cli_sock.send(i)
             except:
                 break
 
+        """
+        BUFF_SIZE = 65536
+        server_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        server_socket.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, BUFF_SIZE)
+        host_ip = '10.100.102.30'  # socket.gethostbyname(host_name)
+        print(host_ip)
+        port = 9999
+        socket_address = (host_ip, port)
+        server_socket.bind(socket_address)
+        print('Listening at:', socket_address)
+
+        fps, st, frames_to_count, cnt = (0, 0, 20, 0)
+
+        while not self.button_dict["exit"]:
+            msg, client_addr = server_socket.recvfrom(BUFF_SIZE)
+            print('GOT connection from ', client_addr)
+            WIDTH = 400
+            while (self.vid.isOpened()):
+                _, frame = self.vid.read()
+                frame = imutils.resize(frame, width=WIDTH)
+                encoded, buffer = cv2.imencode('.jpg', frame, [cv2.IMWRITE_JPEG_QUALITY, 80])
+                message = base64.b64encode(buffer)
+                server_socket.sendto(message, client_addr)
+                cnt += 1
+
+        server_socket.close()
         self.vid.release()
 
     def sound_stream(self):
@@ -189,30 +233,15 @@ class Car:
         stream.close()
         p.terminate()
 
-    def get_buttons(self):
-        sock = socket.socket()
-        sock.bind(("0.0.0.0", BUTTONS_PORT))
-        sock.listen(20)
-        client_sock, addr = sock.accept()
-
-        while not self.button_dict["exit"]:
-            data = pickle.loads(client_sock.recv(1024))
-            self.button_dict = data
-
-        client_sock.close()
-
     def start_threads(self):
-        buttons_thread = threading.Thread(target=self.get_buttons, args=())
         movement_thread = threading.Thread(target=self.movement, args=())
         stream_thread = threading.Thread(target=self.stream, args=())
         sound_stream_thread = threading.Thread(target=self.sound_stream, args=())
 
-        buttons_thread.start()
         movement_thread.start()
         stream_thread.start()
         sound_stream_thread.start()
 
-        buttons_thread.join()
         movement_thread.join()
         stream_thread.join()
         sound_stream_thread.join()
@@ -220,10 +249,6 @@ class Car:
     def registration(self):
         # connect to server
         # registretion
-        pass
-
-    def close(self):
-        # close all threads
         pass
 
 

@@ -1,14 +1,16 @@
 import math
-import time
 import threading
+import time
+import socket
 
 import pyaudio
 import pygame
 from pygame.locals import *
-import socket
+
 import pickle
 import cv2
-from datetime import datetime
+import numpy as np
+import base64
 
 movement_input_dict = {"speed": 0, "angle": 0, "rb": False, "lb": False, "exit": False}
 movement_input_dict_copy = movement_input_dict.copy()
@@ -54,6 +56,7 @@ def calc_angle(x, y):
 
 
 def stream():
+    """
     sock = socket.socket()
     sock.connect((ip_to_send, STREAM_PORT))
 
@@ -107,6 +110,45 @@ def stream():
             new = True
 
     cv2.destroyAllWindows()
+    """
+
+    BUFF_SIZE = 65536
+    client_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    client_socket.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, BUFF_SIZE)
+    host_name = socket.gethostname()
+    host_ip = '10.100.102.30'  # socket.gethostbyname(host_name)
+    print(host_ip)
+    port = 9999
+    message = b'Hello'
+
+    client_socket.sendto(message, (host_ip, port))
+    fps, st, frames_to_count, cnt = (0, 0, 20, 0)
+
+    cv2.namedWindow("RECEIVING VIDEO", cv2.WINDOW_NORMAL)
+    widht = 1920
+    height = 1080
+    cv2.resizeWindow("RECEIVING VIDEO", widht, height)
+    cv2.moveWindow("RECEIVING VIDEO", 0, 0)
+
+    while not movement_input_dict["exit"]:
+        packet, _ = client_socket.recvfrom(BUFF_SIZE)
+        data = base64.b64decode(packet, ' /')
+        npdata = np.fromstring(data, dtype=np.uint8)
+        frame = cv2.imdecode(npdata, 1)
+        frame = cv2.putText(frame, 'FPS: ' + str(fps), (10, 40), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
+        cv2.imshow("RECEIVING VIDEO", frame)
+        key = cv2.waitKey(1) & 0xFF
+        if key == ord('q'):
+            client_socket.close()
+            break
+        if cnt == frames_to_count:
+            try:
+                fps = round(frames_to_count / (time.time() - st))
+                st = time.time()
+                cnt = 0
+            except:
+                pass
+        cnt += 1
 
 
 def sound_stream():
@@ -121,7 +163,6 @@ def sound_stream():
     rate = 44100
 
     p = pyaudio.PyAudio()
-    p.get_default_output_device_info()
 
     audio_stream = p.open(format=format, channels=channels, rate=rate, output=True, frames_per_buffer=chunk)
 

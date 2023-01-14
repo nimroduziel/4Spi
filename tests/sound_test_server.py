@@ -1,32 +1,34 @@
-import pyaudio
-import socket
+import socket, cv2, pickle, struct, time
+import pyshine as ps
 
-print('started audio stream')
-sock = socket.socket()
-sock.bind(("0.0.0.0", 8000))
-sock.listen(20)
-client_sock, addr = sock.accept()
-print("accepted")
+mode = 'send'
+name = 'SERVER TRANSMITTING AUDIO'
+audio, context = ps.audioCapture(mode=mode)
+# ps.showPlot(context,name)
 
-chunk = 1024
-format = pyaudio.paInt16
-channels = 2
-rate = 44100
-
-p = pyaudio.PyAudio()
-p.get_default_input_device_info()
-stream = p.open(format=format, channels=channels, rate=rate, input=True, frames_per_buffer=chunk)
-
-print("* streaming audio")
+# Socket Create
+server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+host_ip = '10.100.102.8'
+port = 4982
+backlog = 5
+socket_address = (host_ip, port)
+print('STARTING SERVER AT', socket_address, '...')
+server_socket.bind(socket_address)
+server_socket.listen(backlog)
 
 while True:
-    # Read audio data from the microphone
-    data = stream.read(chunk)
-    # Send the audio data to the server
-    client_sock.send(data)
-    print("Sending")
-    # print(f"sent chunk: {len(data)}")
+    client_socket, addr = server_socket.accept()
+    print('GOT CONNECTION FROM:', addr)
+    if client_socket:
 
-stream.stop_stream()
-stream.close()
-p.terminate()
+        while (True):
+            frame = audio.get()
+
+            a = pickle.dumps(frame)
+            message = struct.pack("Q", len(a)) + a
+            client_socket.sendall(message)
+
+    else:
+        break
+
+client_socket.close()
