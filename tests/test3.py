@@ -1,30 +1,35 @@
-import cv2
 import socket
-import pickle
+import io
+import picamera
 
-sock = socket.socket()
-sock.connect(("10.100.102.8", 4004))
+# Set up a socket to listen for connections
+server_socket = socket.socket()
+server_socket.bind(('0.0.0.0', 8000))
+server_socket.listen(0)
 
-vid = cv2.VideoCapture(0)
 
-while True:
-    try:
-        ret, frame = vid.read()
-        data = pickle.dumps(frame)
+camera = picamera.PiCamera()
+camera.resolution = (640, 480)
+camera.framerate = 24
+stream = io.BytesIO()
 
-        chunk_size = 4096
-        chunck_lst = []
-        for i in range(0, len(data), chunk_size):
-            chunck_lst.append(data[i:i + chunk_size])
+print("camera ready")
 
-        sock.send(len(data).to_bytes(3, 'big'))
-        print(f"sent: {len(data)}")
+# Continuously capture frames and send them to the client
+for _ in camera.capture_continuous(stream, 'jpeg', use_video_port=True):
+    # Reset the stream position to the beginning
+    stream.seek(0)
 
-        for i in chunck_lst:
-            sock.send(i)
-            print(f"sent {len(i)}")
-    except:
-        break
+    # Read the image data from the stream
+    image_data = stream.read()
+    print("got image")
 
-vid.release()
+    # Send the image data to the client
+    connection = server_socket.accept()[0]
+    print(connection)
+    print("connected")
+    connection.sendall(image_data)
 
+    # Reset the stream for the next frame
+    stream.seek(0)
+    stream.truncate()
