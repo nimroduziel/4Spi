@@ -50,6 +50,7 @@ def handle_car(sock):
 
     while True:  # waiting for client to connect
         if session_dict[id]:
+            sock.send(b"start")
             car_session(sock, id)
             session_dict[id] = False
 
@@ -119,6 +120,7 @@ def open_udp_sock():
 
 
 def send_data_car(id, tcp_sock, udp_sock, addr):
+    global cars_dict
     while session_dict[id]:
         if cars_dict[id]:
             data_lst = cars_dict[id]
@@ -127,14 +129,11 @@ def send_data_car(id, tcp_sock, udp_sock, addr):
             lock.release()
 
             for message in data_lst:
-                print(message[0])   # if A in data then stream, else: tcp socket.
-                if message[0].decode() == "A":
-                    udp_sock.sendto(message[1:], addr)
-                else:
-                    tcp_sock.send(message)
+                tcp_sock.send(message)
 
 
 def send_data_client(id, tcp_sock, udp_sock, addr):
+    global clients_dict
     while session_dict[id]:
         if clients_dict[id]:
             data_lst = clients_dict[id]
@@ -142,12 +141,20 @@ def send_data_client(id, tcp_sock, udp_sock, addr):
             clients_dict[id] = []
             lock.release()
 
-            for message in data_lst:
-                print(message[0])   # if A in data then stream, else: tcp socket.
-                if message[0].decode() == "A":
+            for message in data_lst:    # if A in data then stream, else: tcp socket.
+                if chr(message[0]) == "A":
                     udp_sock.sendto(message[1:], addr)
                 else:
                     tcp_sock.send(message)
+
+
+def recv_data_client(id, sock):
+    global cars_dict
+    while session_dict[id]:
+        data = tcp_sock.recv(1024)
+        lock.acquire()
+        cars_dict[id].append(data)
+        lock.release()
 
 
 def recv_stream_car(id, udp_socket, addr):
@@ -155,7 +162,7 @@ def recv_stream_car(id, udp_socket, addr):
     BUFF_SIZE = 65536
 
     while session_dict[id]:
-        data = udp_socket.recvfrom(BUFF_SIZE)
+        data, _ = udp_socket.recvfrom(BUFF_SIZE)
         lock.acquire()
         clients_dict[id].append(b"A" + data)
         lock.release()
@@ -178,7 +185,7 @@ def car_session(car_sock, id):
 
     data, addr = udp_socket.recvfrom(1024)
 
-    clients_dict[id] = []
+    cars_dict[id] = []
 
     send_thread = threading.Thread(target=send_data_car, args=(id, car_sock, udp_socket, addr))
     recv_stream_thread = threading.Thread(target=recv_stream_car, args=(id, udp_socket, addr))
@@ -187,6 +194,10 @@ def car_session(car_sock, id):
     send_thread.start()
     recv_stream_thread.start()
     recv_data_thread.start()
+
+    send_thread.join()
+    recv_stream_thread.join()
+    recv_data_thread.join()
 
 
 def client_session(client_sock, car_id):
@@ -197,10 +208,12 @@ def client_session(client_sock, car_id):
 
     data, addr = udp_socket.recvfrom(1024)
 
-    cars_dict[car_id] = []
+    clients_dict[car_id] = []
 
     send_thread = threading.Thread(target=send_data_client, args=(car_id, client_sock, udp_socket, addr))
     send_thread.start()
+
+    send_thread.join()
 
 
 def cars(sock, username):
@@ -214,7 +227,9 @@ def cars(sock, username):
     if car_to_connect == "BACK":
         return True
     else:
+        lock.acquire()
         session_dict[car_to_connect] = True
+        lock.release()
         return client_session(sock, car_to_connect) # returns if to continue or not at end
 
 

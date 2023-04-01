@@ -31,6 +31,8 @@ pygame.init()
 
 pygame.joystick.init()
 
+movement_input_dict = {"speed": 0, "angle": 0, "rb": False, "lb": False, "exit": False}
+
 
 class Graphics:
     def __init__(self):
@@ -247,7 +249,7 @@ def view_cars(sock):
                 chosen_car = int(event.pos[1]/divider)
                 print(chosen_car)
                 if cars[chosen_car][3] == "online":
-                    sock.send(cars[chosen_car][2].encode())
+                    sock.send(cars[chosen_car][1].encode())
                     return 6
 
         graphics.draw_cars(cars)
@@ -361,8 +363,10 @@ def calc_angle(x, y):
 
 
 def movement(sock):
+    global movement_input_dict
     movement_input_dict = {"speed": 0, "angle": 0, "rb": False, "lb": False, "exit": False}
     movement_input_dict_copy = movement_input_dict.copy()
+    print("started movement")
 
     joysticks = [pygame.joystick.Joystick(i) for i in range(pygame.joystick.get_count())]
     for joystick in joysticks:
@@ -442,7 +446,7 @@ def movement(sock):
             time.sleep(0.1)
 
 
-def stream(stream_socket,stream_addr):
+def stream(stream_socket, stream_addr):
     BUFF_SIZE = 65536
     fps, st, frames_to_count, cnt = (0, 0, 20, 0)
 
@@ -452,17 +456,14 @@ def stream(stream_socket,stream_addr):
     cv2.resizeWindow("RECEIVING VIDEO", widht, height)
     cv2.moveWindow("RECEIVING VIDEO", 0, 0)
 
-    while True:
+    while not movement_input_dict["exit"]:
         packet, _ = stream_socket.recvfrom(BUFF_SIZE)
         data = base64.b64decode(packet, ' /')
         npdata = np.fromstring(data, dtype=np.uint8)
         frame = cv2.imdecode(npdata, 1)
         frame = cv2.putText(frame, 'FPS: ' + str(fps), (10, 40), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
         cv2.imshow("RECEIVING VIDEO", frame)
-
-        if movement_input_dict["exit"]:
-            stream_socket.close()
-            break
+        key = cv2.waitKey(1) & 0xFF
         if cnt == frames_to_count:
             try:
                 fps = round(frames_to_count / (time.time() - st))
@@ -472,6 +473,8 @@ def stream(stream_socket,stream_addr):
                 pass
         cnt += 1
 
+    stream_socket.close()
+
 
 def sound_stream():
     pass
@@ -479,9 +482,12 @@ def sound_stream():
 
 def session(sock):
     print("started session")
+    BUFF_SIZE = 65536
 
     # open all sockets and put them in a dictionary
     stream_socket = socket.socket(family=socket.AF_INET, type=socket.SOCK_DGRAM)
+    stream_socket.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, BUFF_SIZE)
+
     stream_port = int(sock.recv(1024).decode())
     stream_addr = (SERVER_IP, stream_port)
     stream_socket.sendto(b"hello", stream_addr)
@@ -489,12 +495,15 @@ def session(sock):
     # A for stream, B for movement, C for sound stream
 
     movement_thread = threading.Thread(target=movement, args=(sock,))
-    stream_thread = threading.Thread(target=stream, args=(stream_socket,stream_addr))
+    stream_thread = threading.Thread(target=stream, args=(stream_socket, stream_addr))
     #sound_stream_thread = threading.Thread(target=sound_stream, args=())
 
     movement_thread.start()
     stream_thread.start()
     #sound_stream_thread.start()
+
+    movement_thread.join()
+    stream_thread.join()
 
 
 graphics = Graphics()
