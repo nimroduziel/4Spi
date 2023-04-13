@@ -18,24 +18,25 @@ import sys
 
 pygame.init()
 
+pygame.joystick.init()
+
+screen = pygame.display.set_mode((640, 480))
+
+
 sign_font = pygame.font.Font('freesansbold.ttf', 32)
-
-clients_data_dict = {}
-cars_data_dict = {}
-
-STREAM_PORT = 8080
 
 SERVER_IP = "127.0.0.1"  # change after in amazon
 
-pygame.init()
 
-pygame.joystick.init()
-
-movement_input_dict = {"speed": 0, "angle": 0, "rb": False, "lb": False, "exit": False}
+exit_session = False
 
 
 class Graphics:
     def __init__(self):
+        self.screen = pygame.display.set_mode((600, 500))
+
+    def restart(self):
+        pygame.display.init()
         self.screen = pygame.display.set_mode((600, 500))
 
     def change_screen(self, width, height):
@@ -363,14 +364,19 @@ def calc_angle(x, y):
 
 
 def movement(sock):
-    global movement_input_dict
-    movement_input_dict = {"speed": 0, "angle": 0, "rb": False, "lb": False, "exit": False}
-    movement_input_dict_copy = movement_input_dict.copy()
-    print("started movement")
+    global exit_session
+
+    pygame.init()
+
+    pygame.joystick.init()
 
     joysticks = [pygame.joystick.Joystick(i) for i in range(pygame.joystick.get_count())]
     for joystick in joysticks:
         print(joystick.get_name())
+
+    movement_input_dict = {"speed": 0, "angle": 0, "rb": False, "lb": False, "exit": False}
+    movement_input_dict_copy = movement_input_dict.copy()
+    print("started movement")
 
     right_val = 0
     left_val = 0
@@ -378,9 +384,13 @@ def movement(sock):
     y_axis_val = 0
     x_axis_val = 0
 
-    while not movement_input_dict["exit"]:
+    while not exit_session:
+        pygame.event.pump()
+
         for event in pygame.event.get():
-            if event.type == JOYAXISMOTION:
+            if event.type == pygame.QUIT:
+                pass
+            elif event.type == JOYAXISMOTION:
                 if event.axis == 5:
                     right_val = int((event.value * 100 + 100) / 2)
 
@@ -419,8 +429,7 @@ def movement(sock):
                     movement_input_dict["rb"] = True
                 elif event.button == 7:
                     movement_input_dict["exit"] = True
-                    run = False
-                    pygame.quit()
+                    exit_session = True
 
             elif event.type == JOYBUTTONUP:
                 if event.button == 4:
@@ -447,6 +456,8 @@ def movement(sock):
 
 
 def stream(stream_socket, stream_addr):
+    global exit_session
+
     BUFF_SIZE = 65536
     fps, st, frames_to_count, cnt = (0, 0, 20, 0)
 
@@ -456,24 +467,32 @@ def stream(stream_socket, stream_addr):
     cv2.resizeWindow("RECEIVING VIDEO", widht, height)
     cv2.moveWindow("RECEIVING VIDEO", 0, 0)
 
-    while not movement_input_dict["exit"]:
-        packet, _ = stream_socket.recvfrom(BUFF_SIZE)
-        data = base64.b64decode(packet, ' /')
-        npdata = np.fromstring(data, dtype=np.uint8)
-        frame = cv2.imdecode(npdata, 1)
-        frame = cv2.putText(frame, 'FPS: ' + str(fps), (10, 40), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
-        cv2.imshow("RECEIVING VIDEO", frame)
-        key = cv2.waitKey(1) & 0xFF
-        if cnt == frames_to_count:
-            try:
-                fps = round(frames_to_count / (time.time() - st))
-                st = time.time()
-                cnt = 0
-            except:
-                pass
-        cnt += 1
+    time.sleep(0.5)
+
+    stream_socket.settimeout(0.5)
+
+    try:
+        while not exit_session:
+            packet, _ = stream_socket.recvfrom(BUFF_SIZE)
+            data = base64.b64decode(packet, ' /')
+            npdata = np.fromstring(data, dtype=np.uint8)
+            frame = cv2.imdecode(npdata, 1)
+            frame = cv2.putText(frame, 'FPS: ' + str(fps), (10, 40), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
+            cv2.imshow("RECEIVING VIDEO", frame)
+            key = cv2.waitKey(1) & 0xFF
+            if cnt == frames_to_count:
+                try:
+                    fps = round(frames_to_count / (time.time() - st))
+                    st = time.time()
+                    cnt = 0
+                except:
+                    pass
+            cnt += 1
+    except:
+        exit_session = True
 
     stream_socket.close()
+    cv2.destroyAllWindows()
 
 
 def sound_stream():
@@ -481,8 +500,13 @@ def sound_stream():
 
 
 def session(sock):
+    global exit_session
     print("started session")
     BUFF_SIZE = 65536
+
+    pygame.display.quit()
+
+    exit_session = False
 
     # open all sockets and put them in a dictionary
     stream_socket = socket.socket(family=socket.AF_INET, type=socket.SOCK_DGRAM)
@@ -498,18 +522,23 @@ def session(sock):
     stream_thread = threading.Thread(target=stream, args=(stream_socket, stream_addr))
     #sound_stream_thread = threading.Thread(target=sound_stream, args=())
 
-    movement_thread.start()
+    #movement_thread.start()
     stream_thread.start()
     #sound_stream_thread.start()
 
-    movement_thread.join()
+    #movement_thread.join()
+    movement(sock)
+
     stream_thread.join()
+
+    print("ended session")
 
 
 graphics = Graphics()
 
 
 def main():
+    global graphics
     sock = socket.socket()
     sock.connect(("127.0.0.1", 9000))
 
@@ -529,7 +558,9 @@ def main():
         elif current_screen == 5:
             current_screen = view_vids(sock)
         elif current_screen == 6:
-            current_screen = session(sock)
+            session(sock)
+            graphics.restart()
+            current_screen = 3
         print(current_screen)
 
     sock.send(b"EXIT")

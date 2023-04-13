@@ -158,8 +158,7 @@ class Car:
             stream_socket.sendto(message, stream_addr)
             cnt += 1
 
-        server_socket.close()
-        self.vid.release()
+        stream_socket.close()
         print("stream ended")
 
     def sound_stream(self):
@@ -193,12 +192,15 @@ class Car:
         p.terminate()
 
     def start_threads(self):
+        self.car_movement.buttons["exit"] = False
 
         stream_socket = socket.socket(family=socket.AF_INET, type=socket.SOCK_DGRAM)
         stream_port = int(self.main_sock.recv(1024).decode())
         print(stream_port)
         stream_addr = (SERVER_IP, stream_port)
         stream_socket.sendto(b"hello", stream_addr)
+
+        print("sent hello")
 
         movement_thread = threading.Thread(target=self.movement, args=())
         stream_thread = threading.Thread(target=self.stream, args=(stream_socket, stream_addr))
@@ -213,6 +215,7 @@ class Car:
         movement_thread.join()
         stream_thread.join()
         #sound_stream_thread.join()
+        print("session ended")
 
     def registration(self):
         # connect to server
@@ -244,7 +247,9 @@ def main():
             print("GPIO Clean up")
     except:
         GPIO.cleanup()
-        print("GPIO Clean up")
+        car.main_sock.close()
+        car.vid.release()
+        print("GPIO Clean up and socket closed")
 
 
 if __name__ == '__main__':

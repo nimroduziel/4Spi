@@ -7,7 +7,7 @@ import hashlib
 import rsa
 import pickle
 import secrets
-
+import select
 
 DB = CarClientORM()
 lock = threading.Lock()
@@ -20,6 +20,18 @@ cars_dict = {}
 clients_dict = {}
 
 taken_port_list = []
+
+sockets_list = []
+
+
+def is_socket_connected(sock) -> bool:
+    read_sockets, _, _ = select.select(sockets_list, [], [], 0)
+
+    # if the client socket is still in the list of active sockets, it means it is still connected
+    if sock in read_sockets:
+        return False
+    else:
+        return True
 
 
 def accept_car(sock):
@@ -38,6 +50,8 @@ def accept_car(sock):
 def handle_car(sock):
     global session_dict
 
+    running = True
+
     accepted, id = accept_car(sock)
     if not accepted:
         sock.send(b"not accepted")
@@ -48,11 +62,25 @@ def handle_car(sock):
     session_dict[id] = False
     lock.release()
 
-    while True:  # waiting for client to connect
+    while is_socket_connected(sock):  # waiting for client to connect
         if session_dict[id]:
             sock.send(b"start")
             car_session(sock, id)
+
+            # may not be needed
+            lock.acquire()
             session_dict[id] = False
+            lock.release()
+
+    time.sleep(0.5)
+    lock.acquire()
+    session_dict.pop(id, None)
+    lock.release()
+
+    print("car removed")
+    lock.acquire()
+    DB.change_state(id, "offline")
+    lock.release()
 
 
 def sign(sock):
@@ -119,6 +147,42 @@ def open_udp_sock():
     return udp_socket, random_port
 
 
+def send_data_client(id, tcp_sock, udp_sock, addr):
+    global clients_dict
+    while session_dict[id]:
+        if clients_dict[id]:
+            data_lst = clients_dict[id]
+            lock.acquire()
+            clients_dict[id] = []
+            lock.release()
+
+            for message in data_lst:    # if A in data then stream, else: tcp socket.
+                if message:
+                    if chr(message[0]) == "A":
+                        udp_sock.sendto(message[1:], addr)
+                    else:
+                        tcp_sock.send(message)
+
+
+def recv_data_client(id, sock):
+    global cars_dict
+    time.sleep(0.1)
+
+    sock.settimeout(0.2)
+
+    data = b""
+    while session_dict[id]:
+        try:
+            data = sock.recv(1024)
+        except:
+            pass
+        if data:
+            lock.acquire()
+            cars_dict[id].append(data)
+            lock.release()
+            data = b""
+
+
 def send_data_car(id, tcp_sock, udp_sock, addr):
     global cars_dict
     while session_dict[id]:
@@ -132,53 +196,44 @@ def send_data_car(id, tcp_sock, udp_sock, addr):
                 tcp_sock.send(message)
 
 
-def send_data_client(id, tcp_sock, udp_sock, addr):
-    global clients_dict
-    while session_dict[id]:
-        if clients_dict[id]:
-            data_lst = clients_dict[id]
-            lock.acquire()
-            clients_dict[id] = []
-            lock.release()
-
-            for message in data_lst:    # if A in data then stream, else: tcp socket.
-                if chr(message[0]) == "A":
-                    udp_sock.sendto(message[1:], addr)
-                else:
-                    tcp_sock.send(message)
-
-
-def recv_data_client(id, sock):
-    global cars_dict
-    while session_dict[id]:
-        data = tcp_sock.recv(1024)
-        lock.acquire()
-        cars_dict[id].append(data)
-        lock.release()
-
-
 def recv_stream_car(id, udp_socket, addr):
     global clients_dict
     BUFF_SIZE = 65536
 
-    while session_dict[id]:
-        data, _ = udp_socket.recvfrom(BUFF_SIZE)
+    udp_socket.settimeout(0.5)
+
+    try:
+        while session_dict[id]:
+            data, _ = udp_socket.recvfrom(BUFF_SIZE)
+            lock.acquire()
+            clients_dict[id].append(b"A" + data)
+            lock.release()
+    except:
         lock.acquire()
-        clients_dict[id].append(b"A" + data)
+        session_dict[id] = False
         lock.release()
 
 
 def recv_data_car(id, tcp_sock):
     global clients_dict
+
+    tcp_sock.settimeout(0.2)
+
+    data = b""
     while session_dict[id]:
-        data = tcp_sock.recv(1024)
-        lock.acquire()
-        clients_dict[id].append(data)
-        lock.release()
+        try:
+            data = tcp_sock.recv(1024)
+        except:
+            pass
+        if data:
+            lock.acquire()
+            clients_dict[id].append(data)
+            lock.release()
+            data = b""
 
 
 def car_session(car_sock, id):
-    global clients_dict
+    global cars_dict
 
     udp_socket, port = open_udp_sock()
     car_sock.send(str(port).encode())
@@ -199,38 +254,49 @@ def car_session(car_sock, id):
     recv_stream_thread.join()
     recv_data_thread.join()
 
+    car_sock.settimeout(None)
+    print("car session ended")
+
 
 def client_session(client_sock, car_id):
-    global cars_dict
+    global clients_dict
 
     udp_socket, port = open_udp_sock()
     client_sock.send(str(port).encode())
 
     data, addr = udp_socket.recvfrom(1024)
-
+    print("car id", car_id)
     clients_dict[car_id] = []
 
     send_thread = threading.Thread(target=send_data_client, args=(car_id, client_sock, udp_socket, addr))
+    recv_thread = threading.Thread(target=recv_data_client, args=(car_id, client_sock))
+
     send_thread.start()
+    recv_thread.start()
 
     send_thread.join()
+    recv_thread.join()
+
+    client_sock.settimeout(None)
+    time.sleep(1)
 
 
 def cars(sock, username):
     global session_dict
-    cars_to_send = DB.get_cars_by_owner(username)
-    print(cars_to_send)
-    sock.send(pickle.dumps(cars_to_send))
-    car_to_connect = sock.recv(1024).decode()
-    print(car_to_connect)
+    while True:
+        cars_to_send = DB.get_cars_by_owner(username)
+        print(cars_to_send)
+        sock.send(pickle.dumps(cars_to_send))
+        car_to_connect = sock.recv(1024).decode()
+        print(car_to_connect)
 
-    if car_to_connect == "BACK":
-        return True
-    else:
-        lock.acquire()
-        session_dict[car_to_connect] = True
-        lock.release()
-        return client_session(sock, car_to_connect) # returns if to continue or not at end
+        if car_to_connect == "BACK":
+            return True
+        else:
+            lock.acquire()
+            session_dict[car_to_connect] = True
+            lock.release()
+            client_session(sock, car_to_connect) # returns if to continue or not at end
 
 
 def add_car(sock, username):
@@ -294,12 +360,14 @@ def handle_client(sock):
 
 
 def car_main_thread():
+    global sockets_list
     car_main_socket = socket.socket()
     car_main_socket.bind(("0.0.0.0", 8000))
     car_main_socket.listen(20)
     while True:
         car_sock, addr = car_main_socket.accept()
         print(f"connected: {addr}")
+        sockets_list.append(car_sock)
         car_thread = threading.Thread(target=handle_car, args=(car_sock,))
         car_thread.start()
 
